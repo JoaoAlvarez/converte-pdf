@@ -264,6 +264,33 @@ def _write_statement_excel(statement, output_xlsx: str) -> int:
     return count
 
 
+def _write_itau_extrato_excel(lancamentos, output_xlsx: str) -> int:
+    """Escreve o extrato do Itaú em uma única aba, com colunas separadas e
+    uma linha de totais no fim."""
+    from openpyxl import Workbook
+
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "Extrato"
+    ws.append(["Data", "Descrição", "Entrada (R$)", "Saída (R$)", "Saldo (R$)"])
+
+    tot_ent = tot_sai = 0.0
+    for t in lancamentos:
+        ws.append([t["data"], t["descricao"], t["entrada"], t["saida"], t["saldo"]])
+        tot_ent += t["entrada"] or 0.0
+        tot_sai += t["saida"] or 0.0
+
+    ws.append([])
+    ws.append(["", "TOTAIS", round(tot_ent, 2), round(tot_sai, 2), ""])
+
+    for row in ws.iter_rows(min_row=2, min_col=3, max_col=5):
+        for cell in row:
+            cell.number_format = "#,##0.00"
+
+    wb.save(output_xlsx)
+    return len(lancamentos)
+
+
 def pdf_to_excel(pdf_path: str, output_xlsx: str, progress=None,
                  password: str | None = None) -> tuple[str, int]:
     """Converte um PDF em planilha do Excel (.xlsx).
@@ -295,6 +322,21 @@ def pdf_to_excel(pdf_path: str, output_xlsx: str, progress=None,
         n = _write_statement_excel(statement, output_xlsx)
         if progress:
             progress(1, 1, "Fatura reconhecida e estruturada.")
+        return output_xlsx, n
+
+    # Camada 0b: extrato de conta corrente do Itaú (planilha única, colunas
+    # data/descrição/entrada/saída/saldo).
+    if progress:
+        progress(0, 1, "Verificando se é um extrato do Itaú...")
+    try:
+        from . import extrato_itau
+        lancamentos, ok = extrato_itau.parse(pdf_path, password)
+    except Exception:
+        ok, lancamentos = False, []
+    if ok:
+        n = _write_itau_extrato_excel(lancamentos, output_xlsx)
+        if progress:
+            progress(1, 1, "Extrato do Itaú reconhecido e estruturado.")
         return output_xlsx, n
 
     wb = Workbook()

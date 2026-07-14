@@ -38,6 +38,13 @@ lançamentos **reconcilia com o total da fatura** — senão, cai no método gen
 
 Os parsers por banco foram portados do projeto `gerir-cartao`.
 
+### Extrato de conta corrente do Itaú
+
+O **extrato mensal do Itaú** (conta corrente) é reconhecido e vira **uma única
+planilha limpa** com colunas Data | Descrição | Entrada | Saída | Saldo e uma
+linha de totais — em vez de uma aba por página. Usa a posição das colunas no
+PDF para separar entradas, saídas e saldo corretamente.
+
 ## Para o usuário final
 
 1. Acesse a página **Releases** deste repositório no GitHub.
