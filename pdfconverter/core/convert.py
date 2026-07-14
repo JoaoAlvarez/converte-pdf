@@ -213,22 +213,89 @@ def _is_useful(table):
     return rows >= 2 and cols >= 2 and filled >= 4
 
 
-def pdf_to_excel(pdf_path: str, output_xlsx: str, progress=None) -> tuple[str, int]:
+def _write_statement_excel(statement, output_xlsx: str) -> int:
+    """Escreve uma fatura estruturada: uma aba 'Lançamentos' com todas as
+    transações e uma aba 'Resumo'. Devolve a quantidade de transações."""
+    from openpyxl import Workbook
+
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "Lançamentos"
+    headers = ["Titular", "Final", "Data", "Descrição", "Parcela", "Cidade",
+               "Valor (R$)", "Tipo"]
+    ws.append(headers)
+
+    count = 0
+    for section in statement.sections:
+        for t in section.transactions:
+            parcela = ""
+            if t.installment_current and t.installment_total:
+                parcela = f"{t.installment_current:02d}/{t.installment_total:02d}"
+            valor = t.amount_cents / 100.0
+            if t.is_credit:
+                valor = -valor
+            ws.append([
+                section.holder_name,
+                section.last_four_digits,
+                t.date,
+                t.description,
+                parcela,
+                t.city or "",
+                valor,
+                "Crédito" if t.is_credit else "Débito",
+            ])
+            count += 1
+
+    # Formata a coluna de valor como moeda.
+    for row in ws.iter_rows(min_row=2, min_col=7, max_col=7):
+        for cell in row:
+            cell.number_format = "#,##0.00"
+
+    resumo = wb.create_sheet("Resumo")
+    resumo.append(["Banco/Marca", statement.brand])
+    resumo.append(["Cartão", statement.card_number])
+    resumo.append(["Vencimento", statement.due_date])
+    resumo.append(["Mês de referência", statement.billing_month])
+    resumo.append(["Total da fatura (R$)", statement.total_cents / 100.0])
+    resumo.append(["Qtd. de lançamentos", count])
+    resumo["B5"].number_format = "#,##0.00"
+
+    wb.save(output_xlsx)
+    return count
+
+
+def pdf_to_excel(pdf_path: str, output_xlsx: str, progress=None,
+                 password: str | None = None) -> tuple[str, int]:
     """Converte um PDF em planilha do Excel (.xlsx).
 
-    Estratégia por página, para lidar com formatos diferentes de extrato:
-      1. Tenta a detecção por **grade desenhada** (pdfplumber padrão). Funciona
-         bem em extratos com linhas de tabela, como o Banco do Brasil.
-      2. Se a grade não produz uma tabela útil, reconstrói a tabela pelas
-         **posições das palavras** — resolve extratos alinhados por espaçamento,
-         como o Itaú.
-      3. Se nada der certo na página, extrai o texto linha a linha, para o
-         usuário nunca ficar com uma planilha vazia.
+    Estratégia em camadas:
+      0. **Fatura de cartão reconhecida** (PicPay, Nubank, etc.): usa um parser
+         específico do banco e gera uma planilha estruturada (data, descrição,
+         parcela, cidade, valor), MAS só se a soma dos lançamentos reconcilia
+         com o total da fatura — senão cai para o método genérico.
+      1. Detecção por **grade desenhada** (pdfplumber). Bom p/ Banco do Brasil.
+      2. Reconstrução pelas **posições das palavras** — extratos alinhados por
+         espaçamento (Itaú) e faturas de duas colunas.
+      3. Texto linha a linha, para nunca gerar planilha vazia.
 
     Retorna (caminho, quantidade_de_tabelas_encontradas).
     """
     import pdfplumber
     from openpyxl import Workbook
+
+    # Camada 0: fatura de cartão estruturada (com trava de reconciliação).
+    if progress:
+        progress(0, 1, "Verificando se é uma fatura de cartão reconhecida...")
+    try:
+        from . import banks
+        statement = banks.best_statement(pdf_path, password)
+    except Exception:
+        statement = None
+    if statement is not None:
+        n = _write_statement_excel(statement, output_xlsx)
+        if progress:
+            progress(1, 1, "Fatura reconhecida e estruturada.")
+        return output_xlsx, n
 
     wb = Workbook()
     wb.remove(wb.active)  # começa sem abas; criamos conforme o conteúdo
@@ -244,7 +311,7 @@ def pdf_to_excel(pdf_path: str, output_xlsx: str, progress=None) -> tuple[str, i
         for row in table:
             ws.append([("" if cell is None else str(cell)) for cell in row])
 
-    with pdfplumber.open(pdf_path) as pdf:
+    with pdfplumber.open(pdf_path, password=password) as pdf:
         total = len(pdf.pages)
         for page_no, page in enumerate(pdf.pages, start=1):
             if progress:

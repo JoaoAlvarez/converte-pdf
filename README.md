@@ -20,6 +20,24 @@ pensada para pessoas não técnicas (contadores, advogados, etc.). Basta baixar 
 Funciona com arquivos grandes e pequenos — as conversões rodam em segundo
 plano, com barra de progresso, sem travar a janela.
 
+### Faturas de cartão reconhecidas (PDF → Excel estruturado)
+
+Para faturas de cartão de alguns bancos, o **PDF → Excel** gera uma planilha
+limpa e estruturada (Data, Descrição, Parcela, Cidade, Valor, Tipo) em vez da
+extração genérica de tabelas. Cada fatura só é tratada assim quando a soma dos
+lançamentos **reconcilia com o total da fatura** — senão, cai no método genérico
+(sem risco de dados incompletos).
+
+| Banco | Status |
+|---|---|
+| PicPay | ✅ estruturado |
+| Nubank | ✅ estruturado |
+| Itaú (fatura de cartão) | 🔧 em ajuste (usa método genérico por ora) |
+| Bradesco (fatura) | 🔧 em ajuste (usa método genérico por ora) |
+| Mercado Pago | 🔧 em ajuste (faturas protegidas por senha) |
+
+Os parsers por banco foram portados do projeto `gerir-cartao`.
+
 ## Para o usuário final
 
 1. Acesse a página **Releases** deste repositório no GitHub.

@@ -11,6 +11,10 @@ from __future__ import annotations
 
 from .types import ParsedStatement
 from .picpay import parse_picpay_statement
+from .bradesco import parse_bradesco_statement
+from .itau import parse_itau_statement
+from .nubank import parse_nubank_statement
+from .mercadopago import parse_mercadopago_statement
 
 
 import re as _re
@@ -111,9 +115,13 @@ def detect_issuer(text: str) -> str:
     return "unknown"
 
 
-# Registro de parsers disponíveis (preenchido conforme forem portados).
+# Registro de parsers disponíveis por banco.
 _PARSERS = {
+    "mercadopago": parse_mercadopago_statement,
+    "nubank": parse_nubank_statement,
     "picpay": parse_picpay_statement,
+    "bradesco": parse_bradesco_statement,
+    "itau": parse_itau_statement,
 }
 
 
@@ -131,3 +139,64 @@ def parse_statement(text: str) -> ParsedStatement | None:
         return None
     st = parser(text)
     return st if st.sections else None
+
+
+def _text_mupdf_sorted(pdf_path: str, password: str | None) -> str:
+    try:
+        import pymupdf as fitz
+    except ImportError:
+        import fitz
+    doc = fitz.open(pdf_path)
+    try:
+        if doc.needs_pass:
+            doc.authenticate(password or "")
+        return "\n".join(page.get_text("text", sort=True) for page in doc)
+    finally:
+        doc.close()
+
+
+def _text_variants(pdf_path: str, password: str | None):
+    """Gera variantes de texto (extratores diferentes servem a bancos diferentes)."""
+    # 1) pdfplumber consciente de colunas (bom p/ PicPay e faturas de 2 colunas).
+    try:
+        yield statement_text(pdf_path, password)
+    except Exception:
+        pass
+    # 2) PyMuPDF em ordem geométrica (bom p/ Nubank).
+    try:
+        yield _text_mupdf_sorted(pdf_path, password)
+    except Exception:
+        pass
+
+
+def reconciled_amount_cents(st: ParsedStatement) -> int:
+    """Soma dos lançamentos considerando crédito como negativo."""
+    return sum(
+        (-t.amount_cents if t.is_credit else t.amount_cents)
+        for s in st.sections
+        for t in s.transactions
+    )
+
+
+def best_statement(pdf_path: str, password: str | None = None,
+                   tol_cents: int = 500) -> ParsedStatement | None:
+    """Devolve o ParsedStatement de fatura APENAS se a soma dos lançamentos
+    reconcilia com o total da fatura (dentro de ``tol_cents``). Caso contrário
+    devolve None, e o conversor usa o método genérico. Essa trava evita entregar
+    uma fatura estruturada incompleta ou incorreta.
+    """
+    best: ParsedStatement | None = None
+    best_err: int | None = None
+    for text in _text_variants(pdf_path, password):
+        try:
+            st = parse_statement(text)
+        except Exception:
+            continue
+        if not st or st.total_cents <= 0:
+            continue
+        soma = sum(t.amount_cents for s in st.sections for t in s.transactions)
+        err = min(abs(soma - st.total_cents),
+                  abs(reconciled_amount_cents(st) - st.total_cents))
+        if err <= tol_cents and (best_err is None or err < best_err):
+            best, best_err = st, err
+    return best
