@@ -1,0 +1,14 @@
+# Interface gráfica
+customtkinter==5.2.2
+
+# Motor de PDF / imagens
+PyMuPDF==1.24.10      # renderizar, comprimir, imagens <-> PDF
+pypdf==4.3.1          # juntar / dividir PDF
+pdf2docx==0.5.8       # PDF -> Word
+pdfplumber==0.11.4    # PDF -> Excel (detecção de tabelas)
+openpyxl==3.1.5       # escrever planilhas .xlsx
+Pillow==10.4.0        # manipulação de imagens
+
+# Automação do Microsoft Office no Windows (Word/Excel/PPT -> PDF)
+# Só é usado quando o programa roda no Windows.
+comtypes==1.4.5 ; sys_platform == "win32"
