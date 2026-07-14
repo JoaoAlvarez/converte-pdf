@@ -25,29 +25,118 @@ def pdf_to_word(pdf_path: str, output_docx: str, progress=None) -> str:
     return output_docx
 
 
+def _cluster_1d(values, gap):
+    """Agrupa valores próximos (dentro de ``gap``) e devolve o centro de cada grupo."""
+    if not values:
+        return []
+    values = sorted(values)
+    groups = [[values[0]]]
+    for v in values[1:]:
+        if v - groups[-1][-1] <= gap:
+            groups[-1].append(v)
+        else:
+            groups.append([v])
+    return [sum(g) / len(g) for g in groups]
+
+
+def _words_to_table(page, row_tol=3, col_gap=14):
+    """Reconstrói uma tabela a partir das posições das palavras.
+
+    Usado em PDFs cujas colunas são alinhadas por espaçamento (sem grade
+    desenhada), como muitos extratos bancários. Agrupa palavras em linhas pela
+    coordenada vertical e em colunas pelos pontos de alinhamento horizontal.
+    """
+    words = page.extract_words(use_text_flow=False, keep_blank_chars=False)
+    if not words:
+        return []
+
+    words.sort(key=lambda w: (round(w["top"]), w["x0"]))
+    rows, cur, cur_top = [], [], None
+    for w in words:
+        if cur_top is None or abs(w["top"] - cur_top) <= row_tol:
+            cur.append(w)
+            cur_top = w["top"] if cur_top is None else cur_top
+        else:
+            rows.append(cur)
+            cur, cur_top = [w], w["top"]
+    if cur:
+        rows.append(cur)
+
+    col_starts = _cluster_1d([w["x0"] for w in words], col_gap)
+    if not col_starts:
+        return []
+
+    table = []
+    for row in rows:
+        cells = [""] * len(col_starts)
+        for w in sorted(row, key=lambda w: w["x0"]):
+            ci = min(range(len(col_starts)), key=lambda i: abs(col_starts[i] - w["x0"]))
+            cells[ci] = (cells[ci] + " " + w["text"]).strip()
+        if any(c.strip() for c in cells):
+            table.append(cells)
+    return _drop_empty_columns(table)
+
+
+def _drop_empty_columns(table, min_fill=0.05):
+    """Remove colunas quase totalmente vazias (ruído do agrupamento por palavras)."""
+    if not table:
+        return table
+    ncols = max(len(r) for r in table)
+    keep = []
+    for c in range(ncols):
+        filled = sum(1 for r in table if c < len(r) and r[c].strip())
+        if filled / len(table) >= min_fill:
+            keep.append(c)
+    if not keep:
+        return table
+    return [[(r[c] if c < len(r) else "") for c in keep] for r in table]
+
+
+def _table_quality(table):
+    """Retorna (linhas, colunas, células_preenchidas) para avaliar uma tabela."""
+    if not table:
+        return 0, 0, 0
+    ncols = max(len(r) for r in table)
+    filled = sum(1 for r in table for c in r if c and str(c).strip())
+    return len(table), ncols, filled
+
+
+def _is_useful(table):
+    """Uma tabela vale a pena se tem ≥2 linhas, ≥2 colunas e conteúdo real."""
+    rows, cols, filled = _table_quality(table)
+    return rows >= 2 and cols >= 2 and filled >= 4
+
+
 def pdf_to_excel(pdf_path: str, output_xlsx: str, progress=None) -> tuple[str, int]:
     """Converte um PDF em planilha do Excel (.xlsx).
 
-    Detecta tabelas em cada página com o pdfplumber e escreve cada uma em uma
-    aba. Quando nenhuma tabela é encontrada, cai para um modo de texto, em que
-    cada linha do PDF vira uma linha da planilha — assim o usuário nunca fica
-    com uma planilha vazia.
+    Estratégia por página, para lidar com formatos diferentes de extrato:
+      1. Tenta a detecção por **grade desenhada** (pdfplumber padrão). Funciona
+         bem em extratos com linhas de tabela, como o Banco do Brasil.
+      2. Se a grade não produz uma tabela útil, reconstrói a tabela pelas
+         **posições das palavras** — resolve extratos alinhados por espaçamento,
+         como o Itaú.
+      3. Se nada der certo na página, extrai o texto linha a linha, para o
+         usuário nunca ficar com uma planilha vazia.
 
     Retorna (caminho, quantidade_de_tabelas_encontradas).
     """
     import pdfplumber
     from openpyxl import Workbook
-    from openpyxl.utils import get_column_letter
 
     wb = Workbook()
     wb.remove(wb.active)  # começa sem abas; criamos conforme o conteúdo
     tables_found = 0
-    sheet_index = 0
 
     def _new_sheet(title: str):
         # Nomes de aba no Excel: máx. 31 caracteres e sem caracteres proibidos.
         safe = "".join(c for c in title if c not in r"[]:*?/\\")[:31] or "Planilha"
         return wb.create_sheet(title=safe)
+
+    def _write(title, table):
+        ws = _new_sheet(title)
+        for row in table:
+            ws.append([("" if cell is None else str(cell)) for cell in row])
 
     with pdfplumber.open(pdf_path) as pdf:
         total = len(pdf.pages)
@@ -55,26 +144,27 @@ def pdf_to_excel(pdf_path: str, output_xlsx: str, progress=None) -> tuple[str, i
             if progress:
                 progress(page_no, total, f"Analisando página {page_no} de {total}")
 
-            tables = page.extract_tables() or []
-            for t_no, table in enumerate(tables, start=1):
-                if not table:
-                    continue
-                tables_found += 1
-                sheet_index += 1
-                ws = _new_sheet(f"Pag{page_no}_Tabela{t_no}")
-                for row in table:
-                    ws.append([("" if cell is None else str(cell)) for cell in row])
+            # 1) Grade desenhada.
+            grid_tables = [t for t in (page.extract_tables() or []) if _is_useful(t)]
+            if grid_tables:
+                for t_no, table in enumerate(grid_tables, start=1):
+                    tables_found += 1
+                    _write(f"Pag{page_no}_Tabela{t_no}", table)
+                continue
 
-    # Nenhuma tabela detectada: modo texto (uma linha por linha do PDF).
-    if tables_found == 0:
-        ws = _new_sheet("Texto extraído")
-        with pdfplumber.open(pdf_path) as pdf:
-            for page_no, page in enumerate(pdf.pages, start=1):
-                text = page.extract_text() or ""
+            # 2) Agrupamento por posição das palavras.
+            wt = _words_to_table(page)
+            if _is_useful(wt):
+                tables_found += 1
+                _write(f"Pag{page_no}", wt)
+                continue
+
+            # 3) Texto simples desta página (uma linha por linha do PDF).
+            text = page.extract_text() or ""
+            if text.strip():
+                ws = _new_sheet(f"Pag{page_no}_texto")
                 for line in text.splitlines():
                     ws.append([line])
-                if page_no < len(pdf.pages):
-                    ws.append([])  # linha em branco entre páginas
 
     if not wb.sheetnames:
         _new_sheet("Vazio")
