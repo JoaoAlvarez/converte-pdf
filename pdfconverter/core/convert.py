@@ -2,6 +2,13 @@
 from __future__ import annotations
 
 import os
+import re
+
+# Data no formato dd/mm ou dd/mm/aaaa, mesmo colada a letras (sem exigir espaço),
+# mas sem capturar pedaços no meio de números maiores.
+_DATE_RE = re.compile(r"(?<!\d)(\d{2}/\d{2}(?:/\d{2,4})?)(?!\d)")
+# Valor monetário no padrão brasileiro: 1.234,56 (com ou sem sinal).
+_MONEY_RE = re.compile(r"(?<![\d.,])(-?\d{1,3}(?:\.\d{3})*,\d{2})(?![\d.,])")
 
 
 def pdf_to_word(pdf_path: str, output_docx: str, progress=None) -> str:
@@ -92,6 +99,49 @@ def _drop_empty_columns(table, min_fill=0.05):
     return [[(r[c] if c < len(r) else "") for c in keep] for r in table]
 
 
+def _normalize_wordcluster(table):
+    """Separa datas e valores colados ao texto em colunas próprias.
+
+    Aplicado apenas ao caminho de agrupamento por palavras. Para cada linha:
+      - a primeira data encontrada vira uma coluna "Data" no início;
+      - um valor monetário colado a texto (numa célula que também tem letras)
+        é movido para uma coluna "Valor" no final.
+    As colunas auxiliares só são mantidas se ao menos uma linha as preencher.
+    """
+    if not table:
+        return table
+
+    date_found = value_found = False
+    rows = []
+    for row in table:
+        date_val = ""
+        extracted_value = ""
+        new_cells = []
+        for cell in row:
+            text = cell
+            if not date_val:
+                m = _DATE_RE.search(text)
+                if m:
+                    date_val = m.group(1)
+                    text = (text[: m.start()] + text[m.end():]).strip()
+                    date_found = True
+            # Só separa o valor quando ele está colado a texto (há letras na célula).
+            if not extracted_value and any(ch.isalpha() for ch in text):
+                mv = _MONEY_RE.search(text)
+                if mv:
+                    extracted_value = mv.group(1)
+                    text = (text[: mv.start()] + text[mv.end():]).strip()
+                    value_found = True
+            new_cells.append(text)
+        rows.append([date_val] + new_cells + [extracted_value])
+
+    if not value_found:
+        rows = [r[:-1] for r in rows]
+    if not date_found:
+        rows = [r[1:] for r in rows]
+    return _drop_empty_columns(rows)
+
+
 def _table_quality(table):
     """Retorna (linhas, colunas, células_preenchidas) para avaliar uma tabela."""
     if not table:
@@ -152,8 +202,9 @@ def pdf_to_excel(pdf_path: str, output_xlsx: str, progress=None) -> tuple[str, i
                     _write(f"Pag{page_no}_Tabela{t_no}", table)
                 continue
 
-            # 2) Agrupamento por posição das palavras.
-            wt = _words_to_table(page)
+            # 2) Agrupamento por posição das palavras, com separação de
+            #    datas e valores colados ao texto.
+            wt = _normalize_wordcluster(_words_to_table(page))
             if _is_useful(wt):
                 tables_found += 1
                 _write(f"Pag{page_no}", wt)
