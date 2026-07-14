@@ -46,18 +46,54 @@ def _cluster_1d(values, gap):
     return [sum(g) / len(g) for g in groups]
 
 
-def _words_to_table(page, row_tol=3, col_gap=14):
-    """Reconstrói uma tabela a partir das posições das palavras.
+def _groups_1d(values, gap):
+    """Como _cluster_1d, mas devolve os grupos (para contar membros)."""
+    if not values:
+        return []
+    values = sorted(values)
+    groups = [[values[0]]]
+    for v in values[1:]:
+        if v - groups[-1][-1] <= gap:
+            groups[-1].append(v)
+        else:
+            groups.append([v])
+    return groups
 
-    Usado em PDFs cujas colunas são alinhadas por espaçamento (sem grade
-    desenhada), como muitos extratos bancários. Agrupa palavras em linhas pela
-    coordenada vertical e em colunas pelos pontos de alinhamento horizontal.
+
+def _detect_two_columns(words, page_width):
+    """Detecta páginas com duas colunas de lançamentos lado a lado (faturas).
+
+    Sinal seguro: datas SOLTAS (uma palavra inteira dd/mm) agrupadas em duas
+    posições horizontais distintas e densas. Extratos de coluna única não
+    disparam — no Itaú a data vem colada ao texto (não é palavra-data solta) e
+    no Banco do Brasil todas as datas ficam na mesma posição.
+
+    Retorna o x de corte, ou None.
     """
-    words = page.extract_words(use_text_flow=False, keep_blank_chars=False)
+    date_x = [w["x0"] for w in words if _DATE_RE.fullmatch((w["text"] or "").strip())]
+    if len(date_x) < 6:
+        return None
+    groups = [g for g in _groups_1d(date_x, gap=0.05 * page_width) if len(g) >= 3]
+    if len(groups) < 2:
+        return None
+    groups.sort(key=len, reverse=True)
+    g1, g2 = groups[0], groups[1]
+    # A coluna secundária precisa ser densa (≥30% da principal) para não
+    # confundir datas soltas dentro de uma descrição com uma segunda coluna.
+    if len(g2) < 0.30 * len(g1):
+        return None
+    c1, c2 = sum(g1) / len(g1), sum(g2) / len(g2)
+    if abs(c2 - c1) < 0.20 * page_width:
+        return None
+    right_group = g1 if c1 > c2 else g2
+    return min(right_group) - 0.03 * page_width  # corta um pouco antes das datas da direita
+
+
+def _cluster_words(words, row_tol=3, col_gap=14):
+    """Agrupa uma lista de palavras em linhas (por y) e colunas (por x)."""
     if not words:
         return []
-
-    words.sort(key=lambda w: (round(w["top"]), w["x0"]))
+    words = sorted(words, key=lambda w: (round(w["top"]), w["x0"]))
     rows, cur, cur_top = [], [], None
     for w in words:
         if cur_top is None or abs(w["top"] - cur_top) <= row_tol:
@@ -82,6 +118,26 @@ def _words_to_table(page, row_tol=3, col_gap=14):
         if any(c.strip() for c in cells):
             table.append(cells)
     return _drop_empty_columns(table)
+
+
+def _words_to_table(page):
+    """Reconstrói a tabela de uma página pelas posições das palavras.
+
+    Se a página tem duas colunas de lançamentos lado a lado (faturas de
+    cartão), divide-a e empilha os dois lados; caso contrário, processa a
+    página inteira como uma coluna só (extratos).
+    """
+    words = page.extract_words(use_text_flow=False, keep_blank_chars=False)
+    if not words:
+        return []
+
+    split_x = _detect_two_columns(words, page.width)
+    if split_x is not None:
+        left = [w for w in words if w["x0"] < split_x]
+        right = [w for w in words if w["x0"] >= split_x]
+        return _normalize_wordcluster(_cluster_words(left)) + \
+            _normalize_wordcluster(_cluster_words(right))
+    return _normalize_wordcluster(_cluster_words(words))
 
 
 def _drop_empty_columns(table, min_fill=0.05):
@@ -202,9 +258,9 @@ def pdf_to_excel(pdf_path: str, output_xlsx: str, progress=None) -> tuple[str, i
                     _write(f"Pag{page_no}_Tabela{t_no}", table)
                 continue
 
-            # 2) Agrupamento por posição das palavras, com separação de
-            #    datas e valores colados ao texto.
-            wt = _normalize_wordcluster(_words_to_table(page))
+            # 2) Agrupamento por posição das palavras (com divisão em duas
+            #    colunas quando for fatura, e separação de datas/valores).
+            wt = _words_to_table(page)
             if _is_useful(wt):
                 tables_found += 1
                 _write(f"Pag{page_no}", wt)
