@@ -33,6 +33,8 @@ jobs:
         run: >
           pyinstaller --noconfirm --onefile --windowed
           --name "ConversorPDF"
+          --icon assets/icon.ico
+          --add-data "assets/icon.ico;assets"
           --collect-all customtkinter
           --collect-all pdf2docx
           --collect-all pdfplumber

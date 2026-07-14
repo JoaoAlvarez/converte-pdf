@@ -8,6 +8,7 @@ from __future__ import annotations
 import os
 import platform
 import subprocess
+import sys
 import threading
 import traceback
 from tkinter import filedialog, messagebox
@@ -24,6 +25,12 @@ ctk.set_default_color_theme("blue")
 FT_PDF = [("Arquivos PDF", "*.pdf")]
 FT_IMAGES = [("Imagens", "*.jpg *.jpeg *.png *.bmp *.tif *.tiff *.gif")]
 FT_OFFICE = [("Documentos do Office", "*.docx *.doc *.xlsx *.xls *.pptx *.ppt *.rtf *.odt")]
+
+
+def resource_path(rel: str) -> str:
+    """Resolve o caminho de um recurso, dentro ou fora do bundle do PyInstaller."""
+    base = getattr(sys, "_MEIPASS", os.path.abspath("."))
+    return os.path.join(base, rel)
 
 
 def open_in_explorer(path: str) -> None:
@@ -46,6 +53,12 @@ class App(ctk.CTk):
         self.title(f"Conversor de PDF  v{__version__}")
         self.geometry("780x640")
         self.minsize(680, 560)
+
+        # Ícone da janela (.ico funciona no Windows, que é o alvo do executável).
+        try:
+            self.iconbitmap(resource_path(os.path.join("assets", "icon.ico")))
+        except Exception:
+            pass
 
         self._busy = False
         self._cards: list[ctk.CTkFrame] = []
